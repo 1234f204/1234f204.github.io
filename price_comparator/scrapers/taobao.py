@@ -1,64 +1,143 @@
-import random
+import logging
+import re
 from typing import List
-from .base import BaseScraper
+from selenium.webdriver.common.by import By
 from ..models import Product
+from .base import BaseScraper
 
-TB_STORES = [
-    ("天猫官方旗舰店", 4.9), ("淘宝金牌卖家", 4.7), ("天猫超市", 4.8),
-    ("淘宝企业店铺", 4.6), ("天猫国际官方", 4.9), ("淘宝品牌直营", 4.7),
-    ("天猫甄选店", 4.8), ("淘宝优选店", 4.5),
-]
-
-TB_NAME_SUFFIXES = [
-    " 天猫旗舰店", " 官方正品", " 包邮", "",
-    " 新品上市", " 限时特惠", " 爆款", " 热销款",
-]
+logger = logging.getLogger(__name__)
 
 
 class TaobaoScraper(BaseScraper):
     platform_name = "淘宝"
-    base_url = "https://s.taobao.com"
+    base_url = "https://www.taobao.com"
+    search_url = "https://s.taobao.com/search?q={keyword}"
+    login_keywords = ["登录", "请登录", "login"]
 
     def search(self, keyword: str, count: int = 10) -> List[Product]:
+        return self._scrape_with_selenium(keyword, count)
+
+    def _parse_products(self, driver, keyword: str, count: int) -> List[Product]:
         products = []
-        base_price = self._estimate_base_price(keyword)
-        for i in range(count):
-            store, rating = random.choice(TB_STORES)
-            suffix = random.choice(TB_NAME_SUFFIXES)
-            price = round(base_price * random.uniform(0.75, 1.1), 2)
-            original_price = round(price * random.uniform(1.1, 1.5), 2)
-            sales = random.randint(100, 1000000)
-            item_id = random.randint(100000000000, 999999999999)
-            products.append(Product(
-                name=f"{keyword}{suffix}",
-                price=price,
-                original_price=original_price,
-                sales=sales,
-                store_name=store,
-                store_rating=rating,
-                platform=self.platform_name,
-                url=f"https://item.taobao.com/item.htm?id={item_id}",
-                keyword=keyword,
-            ))
+        try:
+            items = driver.find_elements(
+                By.CSS_SELECTOR,
+                ".Content--contentInner--QVTcU0M, "
+                "[class*='Content--contentInner'], "
+                ".Card--doubleCardWrapper, "
+                "[class*='doubleCard'], "
+                ".search-content-card, "
+                "[class*='Card']",
+            )
+            if not items:
+                items = driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "[class*='item'], [class*='card'], [class*='product']",
+                )
+            for item in items[:count]:
+                try:
+                    product = self._parse_item(item, keyword)
+                    if product and product.price > 0:
+                        products.append(product)
+                except Exception as e:
+                    logger.debug("Taobao parse item error: %s", e)
+                    continue
+        except Exception as e:
+            logger.warning("Taobao find items error: %s", e)
         return products
 
+    def _parse_item(self, item, keyword: str) -> Product:
+        name = ""
+        try:
+            name_el = item.find_element(
+                By.CSS_SELECTOR,
+                "[class*='title'], [class*='Title'], a[title]",
+            )
+            name = self._safe_text(name_el)
+            if not name:
+                name = self._safe_attr(item.find_element(By.CSS_SELECTOR, "a[title]"), "title")
+        except Exception:
+            pass
+
+        price = 0.0
+        try:
+            price_el = item.find_element(
+                By.CSS_SELECTOR,
+                "[class*='price'], [class*='Price']",
+            )
+            price = self._extract_price(self._safe_text(price_el)) or 0.0
+        except Exception:
+            pass
+
+        original_price = None
+        try:
+            op_els = item.find_elements(
+                By.CSS_SELECTOR,
+                "[class*='originalPrice'], [class*='OriginalPrice'], del",
+            )
+            for op_el in op_els:
+                op = self._extract_price(self._safe_text(op_el))
+                if op and op > price:
+                    original_price = op
+                    break
+        except Exception:
+            pass
+
+        url = ""
+        try:
+            link = item.find_element(By.CSS_SELECTOR, "a[href]")
+            url = self._safe_attr(link, "href")
+            if url and not url.startswith("http"):
+                url = "https:" + url
+        except Exception:
+            pass
+
+        store_name = ""
+        store_rating = 0.0
+        try:
+            store_el = item.find_element(
+                By.CSS_SELECTOR,
+                "[class*='shop'], [class*='Shop'], [class*='store']",
+            )
+            store_name = self._safe_text(store_el)
+        except Exception:
+            pass
+
+        sales = 0
+        try:
+            sales_el = item.find_element(
+                By.CSS_SELECTOR,
+                "[class*='sell'], [class*='Sales'], [class*='payNum']",
+            )
+            sales_text = self._safe_text(sales_el)
+            sales = self._parse_sales(sales_text)
+        except Exception:
+            pass
+
+        return Product(
+            name=name or keyword,
+            price=price,
+            original_price=original_price,
+            sales=sales,
+            store_name=store_name,
+            store_rating=store_rating,
+            platform=self.platform_name,
+            url=url or f"https://s.taobao.com/search?q={keyword}",
+            keyword=keyword,
+        )
+
     @staticmethod
-    def _estimate_base_price(keyword: str) -> float:
-        price_hints = {
-            "iphone": 5599, "手机": 2599, "电脑": 4499, "笔记本": 4999,
-            "耳机": 299, "平板": 2199, "ipad": 2699, "电视": 2999,
-            "冰箱": 2599, "洗衣机": 1899, "空调": 2499, "相机": 3999,
-            "键盘": 249, "鼠标": 129, "显示器": 1399, "显卡": 3599,
-            "内存": 349, "硬盘": 449, "音箱": 249, "手表": 999,
-            "路由器": 169, "充电器": 59, "数据线": 15, "壳": 19,
-            "鞋": 299, "衣服": 149, "包": 199, "食品": 39,
-            "炸锅": 259, "空气": 259, "吹风机": 169, "净水器": 1099,
-            "扫地": 2199, "投影": 2699, "打印机": 899, "微波炉": 499,
-            "电饭煲": 259, "豆浆机": 259, "吸尘器": 899, "加湿器": 129,
-            "电动牙刷": 169, "剃须刀": 259, "体脂秤": 69, "台灯": 99,
-        }
-        kw_lower = keyword.lower()
-        for hint, price in price_hints.items():
-            if hint in kw_lower:
-                return price * random.uniform(0.9, 1.1)
-        return random.uniform(30, 4500)
+    def _parse_sales(text: str) -> int:
+        if not text:
+            return 0
+        text = text.replace(",", "").replace(" ", "")
+        if "万" in text:
+            match = re.search(r"([\d.]+)万", text)
+            if match:
+                return int(float(match.group(1)) * 10000)
+        if "千" in text:
+            match = re.search(r"([\d.]+)千", text)
+            if match:
+                return int(float(match.group(1)) * 1000)
+        match = re.search(r"(\d+)", text)
+        return int(match.group(1)) if match else 0

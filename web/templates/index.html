@@ -102,10 +102,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hira
 </div>
 
 <div class="main container">
-<div id="emptyState" class="empty-state" style="display:none">
+<div id="emptyState" class="empty-state" style="display:block">
 <div class="icon">🛒</div>
 <h2>搜索商品开始比价</h2>
 <p>输入关键词，跨平台对比价格、销量、评分</p>
+</div>
+
+<div id="errorState" class="empty-state" style="display:none">
+<div class="icon">⚠️</div>
+<h2>未能获取到商品数据</h2>
+<p id="errorMessage">电商平台可能需要登录或暂时无法访问</p>
+<div id="errorDetails" style="text-align:left;max-width:500px;margin:0 auto;margin-top:16px"></div>
 </div>
 
 <div id="resultsArea" style="display:none">
@@ -242,6 +249,22 @@ async function loadDemo() {
 
 function renderResults(data) {
     document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('errorState').style.display = 'none';
+    if (!data.products || data.products.length === 0) {
+        document.getElementById('resultsArea').style.display = 'none';
+        document.getElementById('errorState').style.display = 'block';
+        const errors = data.errors || [];
+        if (errors.length > 0) {
+            document.getElementById('errorMessage').textContent = '以下平台未能获取数据：';
+            document.getElementById('errorDetails').innerHTML = errors.map(e => 
+                '<div style="padding:8px 12px;margin:4px 0;background:rgba(248,114,114,.1);border-radius:8px;font-size:13px;color:var(--danger)">• ' + e + '</div>'
+            ).join('') + '<div style="margin-top:12px;font-size:13px;color:var(--muted)">可能原因：电商平台需要登录才能搜索、当前网络环境无法访问目标平台、或搜索关键词无对应商品</div>';
+        } else {
+            document.getElementById('errorMessage').textContent = '未找到相关商品，请尝试其他关键词';
+            document.getElementById('errorDetails').innerHTML = '';
+        }
+        return;
+    }
     document.getElementById('resultsArea').style.display = 'block';
     renderStats(data);
     renderPlatformFilter(data);
@@ -250,6 +273,18 @@ function renderResults(data) {
     renderTrendChart(data);
     renderRecommendations(data);
     renderProductTable(data);
+    if (data.errors && data.errors.length > 0) {
+        const errHtml = data.errors.map(e => 
+            '<div style="padding:4px 12px;margin:2px 0;background:rgba(251,191,36,.1);border-radius:6px;font-size:12px;color:var(--warning)">⚠ ' + e + '</div>'
+        ).join('');
+        const existing = document.getElementById('errorBanner');
+        if (existing) existing.remove();
+        const banner = document.createElement('div');
+        banner.id = 'errorBanner';
+        banner.style.cssText = 'margin-bottom:16px';
+        banner.innerHTML = errHtml;
+        document.getElementById('resultsArea').insertBefore(banner, document.getElementById('resultsArea').firstChild);
+    }
 }
 
 function renderStats(data) {
@@ -481,7 +516,7 @@ window.addEventListener('resize', function() {
     trendChartInstance && trendChartInstance.resize();
 });
 
-loadDemo();
+
 </script>
 </body>
 </html>

@@ -1,64 +1,119 @@
-import random
+import logging
+import re
 from typing import List
-from .base import BaseScraper
+from selenium.webdriver.common.by import By
 from ..models import Product
+from .base import BaseScraper
 
-JD_STORES = [
-    ("京东自营", 4.9), ("京东官方旗舰店", 4.8), ("京东数码专营店", 4.7),
-    ("京东家电专营店", 4.6), ("京东超市自营", 4.9), ("京东国际自营", 4.8),
-    ("京东电脑数码旗舰店", 4.7), ("京东生活馆", 4.5),
-]
-
-JD_NAME_SUFFIXES = [
-    " 京东自营", " 官方旗舰店", " 京东专供", "",
-    " 2024新款", " 升级版", " 标配版", " 尊享版",
-]
+logger = logging.getLogger(__name__)
 
 
 class JDScraper(BaseScraper):
     platform_name = "京东"
-    base_url = "https://search.jd.com"
+    base_url = "https://www.jd.com"
+    search_url = "https://search.jd.com/Search?keyword={keyword}&enc=utf-8"
+    login_keywords = ["欢迎登录", "登录注册", "请登录"]
 
     def search(self, keyword: str, count: int = 10) -> List[Product]:
+        return self._scrape_with_selenium(keyword, count)
+
+    def _parse_products(self, driver, keyword: str, count: int) -> List[Product]:
         products = []
-        base_price = self._estimate_base_price(keyword)
-        for i in range(count):
-            store, rating = random.choice(JD_STORES)
-            suffix = random.choice(JD_NAME_SUFFIXES)
-            price = round(base_price * random.uniform(0.85, 1.15), 2)
-            original_price = round(price * random.uniform(1.05, 1.3), 2)
-            sales = random.randint(500, 500000)
-            product_id = f"jd_{random.randint(10000000, 99999999)}"
-            products.append(Product(
-                name=f"{keyword}{suffix}",
-                price=price,
-                original_price=original_price,
-                sales=sales,
-                store_name=store,
-                store_rating=rating,
-                platform=self.platform_name,
-                url=f"https://item.jd.com/{product_id}.html",
-                keyword=keyword,
-            ))
+        try:
+            items = driver.find_elements(By.CSS_SELECTOR, ".gl-item, [data-sku]")
+            if not items:
+                items = driver.find_elements(
+                    By.CSS_SELECTOR, ".J-goods-list .gl-item, #J_goodsList li"
+                )
+            for item in items[:count]:
+                try:
+                    product = self._parse_item(item, keyword)
+                    if product and product.price > 0:
+                        products.append(product)
+                except Exception as e:
+                    logger.debug("JD parse item error: %s", e)
+                    continue
+        except Exception as e:
+            logger.warning("JD find items error: %s", e)
         return products
 
+    def _parse_item(self, item, keyword: str) -> Product:
+        name = ""
+        try:
+            name_el = item.find_element(By.CSS_SELECTOR, ".p-name em, .p-name a em")
+            name = self._safe_text(name_el)
+        except Exception:
+            try:
+                name_el = item.find_element(By.CSS_SELECTOR, ".p-name a")
+                name = self._safe_text(name_el)
+            except Exception:
+                pass
+
+        price = 0.0
+        try:
+            price_el = item.find_element(
+                By.CSS_SELECTOR, ".p-price i, .p-price strong i"
+            )
+            price = self._extract_price(self._safe_text(price_el)) or 0.0
+        except Exception:
+            pass
+
+        original_price = None
+        try:
+            op_el = item.find_element(By.CSS_SELECTOR, ".p-price del, .p-origin-price")
+            original_price = self._extract_price(self._safe_text(op_el))
+        except Exception:
+            pass
+
+        url = ""
+        try:
+            link = item.find_element(By.CSS_SELECTOR, ".p-name a, .p-img a")
+            url = self._safe_attr(link, "href")
+            if url and not url.startswith("http"):
+                url = "https:" + url
+        except Exception:
+            pass
+
+        store_name = ""
+        store_rating = 0.0
+        try:
+            store_el = item.find_element(
+                By.CSS_SELECTOR, ".p-shop a, .J-hope-shop a"
+            )
+            store_name = self._safe_text(store_el)
+        except Exception:
+            pass
+
+        sales = 0
+        try:
+            commit_el = item.find_element(
+                By.CSS_SELECTOR, ".p-commit strong a, .p-commit a"
+            )
+            sales_text = self._safe_text(commit_el)
+            sales = self._parse_sales(sales_text)
+        except Exception:
+            pass
+
+        return Product(
+            name=name or keyword,
+            price=price,
+            original_price=original_price,
+            sales=sales,
+            store_name=store_name,
+            store_rating=store_rating,
+            platform=self.platform_name,
+            url=url or f"https://search.jd.com/Search?keyword={keyword}",
+            keyword=keyword,
+        )
+
     @staticmethod
-    def _estimate_base_price(keyword: str) -> float:
-        price_hints = {
-            "iphone": 5999, "手机": 2999, "电脑": 4999, "笔记本": 5499,
-            "耳机": 399, "平板": 2499, "ipad": 2999, "电视": 3299,
-            "冰箱": 2999, "洗衣机": 2199, "空调": 2799, "相机": 4599,
-            "键盘": 299, "鼠标": 149, "显示器": 1599, "显卡": 3999,
-            "内存": 399, "硬盘": 499, "音箱": 299, "手表": 1299,
-            "路由器": 199, "充电器": 79, "数据线": 19, "壳": 29,
-            "鞋": 399, "衣服": 199, "包": 299, "食品": 49,
-            "炸锅": 299, "空气": 299, "吹风机": 199, "净水器": 1299,
-            "扫地": 2499, "投影": 2999, "打印机": 999, "微波炉": 599,
-            "电饭煲": 299, "豆浆机": 299, "吸尘器": 999, "加湿器": 149,
-            "电动牙刷": 199, "剃须刀": 299, "体脂秤": 79, "台灯": 129,
-        }
-        kw_lower = keyword.lower()
-        for hint, price in price_hints.items():
-            if hint in kw_lower:
-                return price * random.uniform(0.9, 1.1)
-        return random.uniform(50, 5000)
+    def _parse_sales(text: str) -> int:
+        if not text:
+            return 0
+        text = text.replace(",", "").replace(" ", "")
+        if "万" in text:
+            match = re.search(r"([\d.]+)万", text)
+            if match:
+                return int(float(match.group(1)) * 10000)
+        match = re.search(r"(\d+)", text)
+        return int(match.group(1)) if match else 0

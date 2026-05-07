@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 
@@ -8,6 +9,9 @@ from flask import Flask, jsonify, request, send_from_directory
 from price_comparator.scrapers import ALL_SCRAPERS
 from price_comparator.processor import DataProcessor
 from price_comparator.analyzer import DataAnalyzer
+from price_comparator.scrapers.driver import quit_driver
+
+logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
@@ -28,6 +32,7 @@ def search():
         return jsonify({"error": "关键词不能为空"}), 400
 
     all_products = []
+    errors = []
     selected = ALL_SCRAPERS
     if platforms:
         plat_set = set(platforms)
@@ -35,8 +40,13 @@ def search():
 
     for scraper_cls in selected:
         scraper = scraper_cls()
-        products = scraper.search(keyword, count=count)
-        all_products.extend(products)
+        try:
+            products = scraper.search(keyword, count=count)
+            all_products.extend(products)
+            if not products:
+                errors.append(f"{scraper.platform_name}：未能获取到商品数据，平台可能需要登录或暂时无法访问")
+        except Exception as e:
+            errors.append(f"{scraper.platform_name}：采集失败 - {str(e)}")
 
     processor = DataProcessor()
     products = processor.process(all_products, sort_by="price")
@@ -53,6 +63,7 @@ def search():
         "comparison": comparison.to_dict(),
         "trends": [t.to_dict() for t in trends],
         "platform_summary": summary,
+        "errors": errors,
     })
 
 
@@ -65,13 +76,16 @@ def demo():
 def _get_demo_data():
     keyword = "iPhone 16"
     all_products = []
-    random_state = __import__("random").getstate()
-    __import__("random").seed(42)
+    errors = []
     for scraper_cls in ALL_SCRAPERS:
         scraper = scraper_cls()
-        products = scraper.search(keyword, count=6)
-        all_products.extend(products)
-    __import__("random").setstate(random_state)
+        try:
+            products = scraper.search(keyword, count=6)
+            all_products.extend(products)
+            if not products:
+                errors.append(f"{scraper.platform_name}：未能获取到商品数据，平台可能需要登录或暂时无法访问")
+        except Exception as e:
+            errors.append(f"{scraper.platform_name}：采集失败 - {str(e)}")
 
     processor = DataProcessor()
     products = processor.process(all_products, sort_by="price")
@@ -88,8 +102,17 @@ def _get_demo_data():
         "comparison": comparison.to_dict(),
         "trends": [t.to_dict() for t in trends],
         "platform_summary": summary,
+        "errors": errors,
     }
 
 
+@app.teardown_appcontext
+def cleanup(exception=None):
+    pass
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    try:
+        app.run(host="0.0.0.0", port=5000, debug=True)
+    finally:
+        quit_driver()

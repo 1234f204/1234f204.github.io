@@ -13,6 +13,7 @@ console = Console()
 
 def fetch_products(keyword: str, count: int = 8, platforms: str = None):
     all_products = []
+    errors = []
     selected = ALL_SCRAPERS
     if platforms:
         plat_set = set(p.strip() for p in platforms.split(","))
@@ -20,9 +21,24 @@ def fetch_products(keyword: str, count: int = 8, platforms: str = None):
     for scraper_cls in selected:
         scraper = scraper_cls()
         console.print(f"[cyan]🔍 正在从 {scraper.platform_name} 采集 '{keyword}' ...[/cyan]")
-        products = scraper.search(keyword, count=count)
-        all_products.extend(products)
-        console.print(f"[green]  ✓ {scraper.platform_name}: 获取 {len(products)} 条结果[/green]")
+        try:
+            products = scraper.search(keyword, count=count)
+            all_products.extend(products)
+            if products:
+                console.print(f"[green]  ✓ {scraper.platform_name}: 获取 {len(products)} 条结果[/green]")
+            else:
+                msg = f"{scraper.platform_name}：未能获取到商品数据，平台可能需要登录或暂时无法访问"
+                errors.append(msg)
+                console.print(f"[yellow]  ⚠ {msg}[/yellow]")
+        except Exception as e:
+            msg = f"{scraper.platform_name}：采集失败 - {str(e)}"
+            errors.append(msg)
+            console.print(f"[red]  ✗ {msg}[/red]")
+    if errors and not all_products:
+        console.print(f"\n[bold red]所有平台均未能获取数据。可能原因：[/bold red]")
+        console.print("[dim]  • 电商平台需要登录才能搜索[/dim]")
+        console.print("[dim]  • 当前网络环境无法访问目标平台[/dim]")
+        console.print("[dim]  • 搜索关键词无对应商品[/dim]")
     return all_products
 
 
